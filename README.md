@@ -2,13 +2,13 @@
 
 [![Patreon](https://img.shields.io/badge/Patreon-AndersBjarby-F96854?logo=patreon&logoColor=white)](https://www.patreon.com/AndersBjarby)
 
-Parprogrammering mellan två agenter: **Claude Code kör, Codex eller GitHub Copilot navigerar.**
+Parprogrammering mellan två agenter: **Claude Code kör, Codex, GitHub Copilot eller en andra Claude navigerar.**
 
 Varje gång Claude stannar granskar navigatören de ocommittade ändringarna mot målet för sessionen. Har navigatören invändningar (blocker/major) får Claude tillbaka dem innan du ser svaret. Claude måste då ta ställning till varje punkt: åtgärda den eller invända med skäl. Du får tillbaka ordet när navigatören säger LGTM, när föraren står fast vid sin lösning, eller efter tre rundor.
 
 ## Kom igång
 
-Kräver `git`, `python3` och en inloggad navigatör: [Codex CLI](https://github.com/openai/codex) (standard) eller [GitHub Copilot CLI](https://gh.io/copilot-cli).
+Kräver `git`, `python3` och en inloggad navigatör: [Codex CLI](https://github.com/openai/codex) (standard) eller [GitHub Copilot CLI](https://gh.io/copilot-cli), eller Claude Code själv.
 
 ```bash
 ./install.sh ~/Projekt/mitt-projekt   # kopierar in hook + /pair-skill, rör inte övriga inställningar
@@ -51,11 +51,21 @@ Skillnader mot Codex:
 - Copilot saknar en read-only-sandlåda. Navigatören körs i stället med `--deny-tool write`, `--deny-tool shell` och `--deny-tool url` och utan inbyggda MCP-servrar. Den kan läsa repot men inte ändra något. Spärren bygger på behörighetsregler, inte på en sandlåda i operativsystemet.
 - Prompten skrivs till en temporär fil som Copilot läser. Diffen kan vara större än vad som får plats i ett kommandoradsargument.
 
+### Claude som navigatör
+
+Sätt `PAIR_NAVIGATOR=claude` och gärna en modell med `PAIR_CLAUDE_MODEL` (till exempel `opus`). Navigatören körs som `claude -p` med `--json-schema`, och svaret valideras i hooken precis som för de andra.
+
+- Navigatören har bara verktygen `Read`, `Grep` och `Glob` (`--tools`), alltså inga skriv- eller skalverktyg alls. Den laddar bara användarens inställningar (`--setting-sources user`) och inga MCP-servrar.
+- Den laddar alltså inte projektets Stop-hook. Som extra skydd sätter hooken `PAIR_NAVIGATOR_ACTIVE=1` för navigatören och gör ingenting när den variabeln finns, så att granskaren aldrig granskas.
+- Förare och navigatör drar från samma Claude-kvot.
+
+Avvägning: en navigatör från samma modellfamilj har ofta samma blinda fläckar som föraren och tenderar att godta kod i Claudes stil. Den rena kontexten (bara mål och diff, inte förarens resonemang) ger mycket av nyttan, men en navigatör från en annan leverantör fångar fler fel som ingen av Claude-modellerna ser. Välj gärna en navigatörsmodell som är minst lika stark som föraren, och helst en annan modell.
+
 ## Så funkar det
 
 | Del | Roll |
 |---|---|
-| `.claude/hooks/codex-navigator.py` | Stop-hook. Tar en ögonblicksbild av arbetsträdet (inklusive ospårade filer, via ett temporärt index), diffar mot senaste LGTM, kör `codex exec --sandbox read-only --output-schema …` (eller `copilot -p` med skrivspärrar) och blockerar eller släpper. Filnamnet är kvar för att befintliga installationer ska fungera. |
+| `.claude/hooks/codex-navigator.py` | Stop-hook. Tar en ögonblicksbild av arbetsträdet (inklusive ospårade filer, via ett temporärt index), diffar mot senaste LGTM, kör `codex exec --sandbox read-only --output-schema …` (eller `copilot -p` med skrivspärrar, eller `claude -p` med bara läsverktyg) och blockerar eller släpper. Filnamnet är kvar för att befintliga installationer ska fungera. |
 | `.claude/hooks/navigator-prompt.md` | Navigatörens regler: granska mot målet, inga stilnitpickar, verifiera innan du påstår. |
 | `.claude/hooks/navigator-schema.json` | Strukturerat svar: `verdict`, `summary`, `comments[{severity, location, comment}]`. |
 | `.claude/skills/pair/SKILL.md` | `/pair`: startar/stoppar sessionen och ger Claude förarens regler. |
@@ -67,10 +77,10 @@ Skyddsräcken:
 - Max `PAIR_MAX_ROUNDS` (3) rundor per tur.
 - Om navigatören fallerar, eller svarar med något som inte följer schemat, släpps Claude alltid.
 
-Miljövariabler: `PAIR_NAVIGATOR` (`codex` eller `copilot`), `PAIR_MAX_ROUNDS`, `PAIR_MAX_STEPS`, `PAIR_CODEX_MODEL`, `PAIR_CODEX_BIN`, `PAIR_COPILOT_MODEL` och `PAIR_COPILOT_BIN`.
+Miljövariabler: `PAIR_NAVIGATOR` (`codex`, `copilot` eller `claude`), `PAIR_MAX_ROUNDS`, `PAIR_MAX_STEPS`, `PAIR_CODEX_MODEL`, `PAIR_CODEX_BIN`, `PAIR_COPILOT_MODEL`, `PAIR_COPILOT_BIN`, `PAIR_CLAUDE_MODEL` och `PAIR_CLAUDE_BIN`.
 
 ## Tester
 
 ```bash
-python3 -m unittest discover tests   # falsk codex och copilot, inga krediter
+python3 -m unittest discover tests   # falsk codex, copilot och claude, inga krediter
 ```

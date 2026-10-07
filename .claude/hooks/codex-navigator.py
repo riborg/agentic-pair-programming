@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Stop hook: Codex (or GitHub Copilot) acts as navigator and reviews what Claude (the driver) just wrote.
+"""Stop hook: Codex (or GitHub Copilot, or a second Claude) acts as navigator and reviews what Claude (the driver) just wrote.
 
-The navigator CLI is chosen with PAIR_NAVIGATOR: `codex` (default) or `copilot`.
+The navigator CLI is chosen with PAIR_NAVIGATOR: `codex` (default), `copilot` or `claude`.
 
 Inactive unless `.pair/session.md` exists in the project (created by /pair).
 Each review covers what changed since the last LGTM checkpoint (a git tree
@@ -27,7 +27,10 @@ MAX_STEPS = int(os.environ.get("PAIR_MAX_STEPS", "8"))
 NAVIGATOR = os.environ.get("PAIR_NAVIGATOR", "codex").strip().lower()
 CODEX_BIN = os.environ.get("PAIR_CODEX_BIN", "codex")
 COPILOT_BIN = os.environ.get("PAIR_COPILOT_BIN", "copilot")
-NAVIGATOR_NAMES = {"codex": "Codex", "copilot": "Copilot"}
+CLAUDE_BIN = os.environ.get("PAIR_CLAUDE_BIN", "claude")
+NAVIGATOR_NAMES = {"codex": "Codex", "copilot": "Copilot", "claude": "Claude"}
+# Set in a Claude navigator's environment so that its own Stop hook, if it ever loads, does nothing
+ACTIVE_FLAG = "PAIR_NAVIGATOR_ACTIVE"
 NAVIGATOR_NAME = NAVIGATOR_NAMES.get(NAVIGATOR, NAVIGATOR)
 MAX_DIFF_CHARS = 150_000
 NAVIGATOR_TIMEOUT = 540  # keep below the hook timeout in settings.json (600)
@@ -168,6 +171,31 @@ def run_copilot(root, prompt):
         return parse_review(proc.stdout)
 
 
+def run_claude(root, prompt):
+    """A second Claude as navigator, via `claude -p`. Only the read tools exist in its session,
+    and project settings (where this hook lives) and MCP servers are not loaded."""
+    cmd = [
+        CLAUDE_BIN, "-p",
+        "--output-format", "json",
+        "--json-schema", SCHEMA_FILE.read_text(encoding="utf-8"),
+        "--tools", "Read,Grep,Glob",
+        "--permission-mode", "dontAsk",
+        "--setting-sources", "user",
+        "--strict-mcp-config",
+        "--no-session-persistence",
+    ]
+    if os.environ.get("PAIR_CLAUDE_MODEL"):
+        cmd += ["--model", os.environ["PAIR_CLAUDE_MODEL"]]
+    proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=NAVIGATOR_TIMEOUT,
+                          cwd=root, env={**os.environ, ACTIVE_FLAG: "1"})
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or proc.stdout).strip()[-800:])
+    result = json.loads(proc.stdout)
+    if result.get("is_error") or "structured_output" not in result:
+        raise RuntimeError(f"no structured review from claude: {str(result.get('result', ''))[:300]}")
+    return result["structured_output"]
+
+
 def parse_review(text):
     """Pull the JSON object out of a free-text reply (tolerates code fences or stray prose)."""
     start, end = text.find("{"), text.rfind("}")
@@ -190,7 +218,7 @@ def validate_review(review):
     return review
 
 
-NAVIGATORS = {"codex": run_codex, "copilot": run_copilot}
+NAVIGATORS = {"codex": run_codex, "copilot": run_copilot, "claude": run_claude}
 
 
 def run_navigator(root, prompt):
@@ -218,6 +246,8 @@ AUTOPILOT_CONTINUE = (
 
 
 def main():
+    if os.environ.get(ACTIVE_FLAG):
+        sys.exit(0)  # we are inside a Claude navigator: never review the reviewer
     inp = json.load(sys.stdin)
     root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or inp.get("cwd") or ".")
     pair_dir = root / ".pair"

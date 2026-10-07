@@ -1,4 +1,4 @@
-"""Tests for the navigator Stop hook, using a fake codex and a fake copilot. Run: python3 -m unittest discover tests"""
+"""Tests for the navigator Stop hook, using a fake codex, copilot and claude. Run: python3 -m unittest discover tests"""
 import json
 import os
 import subprocess
@@ -10,6 +10,7 @@ REPO = Path(__file__).resolve().parent.parent
 HOOK = REPO / ".claude" / "hooks" / "codex-navigator.py"
 FAKE = Path(__file__).resolve().parent / "fake_codex.py"
 FAKE_COPILOT = Path(__file__).resolve().parent / "fake_copilot.py"
+FAKE_CLAUDE = Path(__file__).resolve().parent / "fake_claude.py"
 
 LGTM = {"verdict": "LGTM", "summary": "Ser bra ut.", "comments": []}
 CHANGES = {
@@ -280,6 +281,54 @@ class CopilotHookTest(HookTest):
         out = self.run_hook(PAIR_NAVIGATOR="gemini")
         self.assertIn("misslyckades", out["systemMessage"])
         self.assertIn("unknown PAIR_NAVIGATOR", out["systemMessage"])
+
+
+class ClaudeHookTest(HookTest):
+    """Every pairing test again, with a second Claude as navigator."""
+    NAVIGATOR_ENV = {"PAIR_NAVIGATOR": "claude", "PAIR_CLAUDE_BIN": str(FAKE_CLAUDE)}
+
+    def navigator_call(self, **env):
+        args_file = self.root.parent / f"{self.root.name}-args.json"
+        self.addCleanup(args_file.unlink, missing_ok=True)
+        out = self.run_hook(FAKE_ARGS_OUT=str(args_file), **env)
+        return out, json.loads(args_file.read_text())
+
+    def test_navigator_is_read_only_and_isolated(self):
+        self.start()
+        self.write("stats.py", "changed\n")
+        _, call = self.navigator_call()
+        args = call["args"]
+        self.assertEqual(args[args.index("--tools") + 1], "Read,Grep,Glob")
+        self.assertEqual(args[args.index("--setting-sources") + 1], "user")
+        self.assertIn("--strict-mcp-config", args)
+        self.assertIn('"severity"', args[args.index("--json-schema") + 1])
+        self.assertEqual(call["active"], "1")
+
+    def test_model_is_passed_through(self):
+        self.start()
+        self.write("stats.py", "changed\n")
+        _, call = self.navigator_call(PAIR_CLAUDE_MODEL="opus")
+        self.assertEqual(call["args"][call["args"].index("--model") + 1], "opus")
+
+    def test_changes_name_the_navigator(self):
+        self.start()
+        self.write("stats.py", "bug\n")
+        out = self.run_hook(CHANGES)
+        self.assertIn("Navigatören (Claude)", out["reason"])
+
+    def test_hook_is_inert_inside_the_navigator(self):
+        self.start()
+        self.write("stats.py", "changed\n")
+        out = self.run_hook(CHANGES, PAIR_NAVIGATOR_ACTIVE="1")
+        self.assertIsNone(out)
+        self.assertFalse(self.reviewed())
+
+    def test_error_result_releases_driver(self):
+        self.start()
+        self.write("stats.py", "changed\n")
+        out = self.run_hook(FAKE_REPLY=json.dumps({"type": "result", "is_error": True, "result": "rate limited"}))
+        self.assertIn("Claude-granskningen misslyckades", out["systemMessage"])
+        self.assertIn("rate limited", out["systemMessage"])
 
 
 if __name__ == "__main__":
